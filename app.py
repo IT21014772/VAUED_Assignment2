@@ -10,9 +10,9 @@ app = Flask(__name__)
  
 # In-memory data storage
 
-vehicles = {}          # {vehicle_id: {"plate": "ABC123", "entry_time": timestamp}}
+vehicles = {}  # {vehicle_id: {"plate": "ABC123", "entry_time": timestamp}}
 
-parking_slots = {      # {slot_id: {"occupied": False, "vehicle_id": None}}
+parking_slots = {
 
     1: {"occupied": False, "vehicle_id": None},
 
@@ -22,7 +22,7 @@ parking_slots = {      # {slot_id: {"occupied": False, "vehicle_id": None}}
 
 }
 
-logs = []              # List of {vehicle_id, entry_time, exit_time, duration}
+logs = []  # List of {vehicle_id, entry_time, exit_time, duration}
  
 # Prometheus Metrics
 
@@ -36,8 +36,54 @@ free_slots_gauge = Gauge("free_slots", "Number of free parking slots")
 
 parking_duration = Histogram("parking_duration_seconds", "Time spent parked")
  
-# Utils
+http_requests_total = Counter(
+
+    "http_requests_total",
+
+    "Count of HTTP requests",
+
+    ["method", "endpoint"]
+
+)
  
+request_latency = Histogram(
+
+    "http_request_duration_seconds",
+
+    "Request latency",
+
+    ["method", "endpoint"]
+
+)
+ 
+# ✅ Middleware for HTTP metrics
+
+@app.before_request
+
+def start_timer():
+
+    request.start_time = time.time()
+ 
+@app.after_request
+
+def record_request_data(response):
+
+    if hasattr(request, 'start_time'):
+
+        # Use url_rule for consistent endpoint names
+
+        endpoint = request.url_rule.rule if request.url_rule else "unknown"
+
+        method = request.method
+
+        http_requests_total.labels(method=method, endpoint=endpoint).inc()
+
+        request_latency.labels(method=method, endpoint=endpoint).observe(time.time() - request.start_time)
+
+    return response
+ 
+# Utils
+
 def update_slot_metrics():
 
     occupied = sum(1 for s in parking_slots.values() if s["occupied"])
@@ -49,7 +95,7 @@ def update_slot_metrics():
     free_slots_gauge.set(free)
  
 # REST Endpoints
- 
+
 @app.route("/vehicles", methods=["POST"])
 
 def register_vehicle():
@@ -58,13 +104,7 @@ def register_vehicle():
 
     vehicle_id = str(len(vehicles) + 1)
 
-    vehicles[vehicle_id] = {
-
-        "plate": data["plate"],
-
-        "entry_time": None
-
-    }
+    vehicles[vehicle_id] = {"plate": data["plate"], "entry_time": None}
 
     return jsonify({"message": "Vehicle registered", "vehicle_id": vehicle_id}), 201
  
@@ -121,7 +161,7 @@ def assign_slot(vehicle_id):
     if vehicles[vehicle_id]["entry_time"] is not None:
 
         return jsonify({"error": "Vehicle already parked"}), 400
- 
+
     for slot_id, slot in parking_slots.items():
 
         if not slot["occupied"]:
@@ -137,7 +177,7 @@ def assign_slot(vehicle_id):
             update_slot_metrics()
 
             return jsonify({"message": f"Vehicle assigned to slot {slot_id}"})
- 
+
     return jsonify({"error": "No free slots available"}), 403
  
 @app.route("/release/<int:slot_id>", methods=["POST"])
@@ -153,7 +193,7 @@ def release_slot(slot_id):
     if not slot["occupied"]:
 
         return jsonify({"error": "Slot already free"}), 400
- 
+
     vehicle_id = slot["vehicle_id"]
 
     entry_time = vehicles[vehicle_id]["entry_time"]
@@ -161,15 +201,13 @@ def release_slot(slot_id):
     exit_time = time.time()
 
     duration = exit_time - entry_time
- 
-    # Reset slot and vehicle state
 
     slot["occupied"] = False
 
     slot["vehicle_id"] = None
 
     vehicles[vehicle_id]["entry_time"] = None
- 
+
     logs.append({
 
         "vehicle_id": vehicle_id,
@@ -181,13 +219,13 @@ def release_slot(slot_id):
         "duration": round(duration, 2)
 
     })
- 
+
     vehicle_exits.inc()
 
     parking_duration.observe(duration)
 
     update_slot_metrics()
- 
+
     return jsonify({"message": f"Slot {slot_id} released", "duration": duration})
  
 @app.route("/logs", methods=["GET"])
