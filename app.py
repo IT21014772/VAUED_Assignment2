@@ -35,28 +35,12 @@ occupied_slots_gauge = Gauge("occupied_slots", "Number of occupied parking slots
 free_slots_gauge = Gauge("free_slots", "Number of free parking slots")
 
 parking_duration = Histogram("parking_duration_seconds", "Time spent parked")
+
+http_requests_total = Counter("http_requests_total", "Count of HTTP requests", ["method", "endpoint"])
+
+request_latency = Histogram("http_request_duration_seconds", "Request latency", ["method", "endpoint"])
  
-http_requests_total = Counter(
-
-    "http_requests_total",
-
-    "Count of HTTP requests",
-
-    ["method", "endpoint"]
-
-)
- 
-request_latency = Histogram(
-
-    "http_request_duration_seconds",
-
-    "Request latency",
-
-    ["method", "endpoint"]
-
-)
- 
-# ✅ Middleware for HTTP metrics
+# Middleware for HTTP metrics
 
 @app.before_request
 
@@ -69,8 +53,6 @@ def start_timer():
 def record_request_data(response):
 
     if hasattr(request, 'start_time'):
-
-        # Use url_rule for consistent endpoint names
 
         endpoint = request.url_rule.rule if request.url_rule else "unknown"
 
@@ -140,7 +122,21 @@ def delete_vehicle(vehicle_id):
 
         return jsonify({"error": "Vehicle not found"}), 404
 
+    # Free any slot this vehicle is occupying
+
+    for slot in parking_slots.values():
+
+        if slot["vehicle_id"] == vehicle_id:
+
+            print(f"Freeing slot during deletion: vehicle {vehicle_id}")
+
+            slot["occupied"] = False
+
+            slot["vehicle_id"] = None
+
     del vehicles[vehicle_id]
+
+    update_slot_metrics()
 
     return jsonify({"message": "Vehicle deleted"})
  
@@ -176,7 +172,9 @@ def assign_slot(vehicle_id):
 
             update_slot_metrics()
 
-            return jsonify({"message": f"Vehicle assigned to slot {slot_id}"})
+            print(f"🚗 Assigned vehicle {vehicle_id} to slot {slot_id}")
+
+            return jsonify({"message": f"Vehicle assigned to slot {slot_id}", "slot_id": slot_id})
 
     return jsonify({"error": "No free slots available"}), 403
  
@@ -197,6 +195,10 @@ def release_slot(slot_id):
     vehicle_id = slot["vehicle_id"]
 
     entry_time = vehicles[vehicle_id]["entry_time"]
+
+    if entry_time is None:
+
+        return jsonify({"error": "Vehicle was not assigned properly"}), 500
 
     exit_time = time.time()
 
@@ -226,6 +228,8 @@ def release_slot(slot_id):
 
     update_slot_metrics()
 
+    print(f"🅿️ Released slot {slot_id} from vehicle {vehicle_id}")
+
     return jsonify({"message": f"Slot {slot_id} released", "duration": duration})
  
 @app.route("/logs", methods=["GET"])
@@ -239,6 +243,33 @@ def get_logs():
 def metrics():
 
     return generate_latest(), 200, {"Content-Type": "text/plain"}
+ 
+# Optional: Reset everything (for testing)
+
+@app.route("/reset", methods=["POST"])
+
+def reset_system():
+
+    global vehicles, parking_slots, logs
+
+    vehicles = {}
+
+    parking_slots = {
+
+        1: {"occupied": False, "vehicle_id": None},
+
+        2: {"occupied": False, "vehicle_id": None},
+
+        3: {"occupied": False, "vehicle_id": None}
+
+    }
+
+    logs = []
+
+    update_slot_metrics()
+
+    return jsonify({"message": "System reset successful"}), 200
+
  
 if __name__ == "__main__":
 
